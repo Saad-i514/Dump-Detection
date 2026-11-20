@@ -4,6 +4,7 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
+import cv2
 from PIL import Image
 import pytest
 from fastapi.testclient import TestClient
@@ -95,6 +96,7 @@ def test_api_key(client):
     assert client.get("/model", headers={"X-API-Key": "wrong"}).status_code == 401
     assert client.get("/model", headers={"X-API-Key": key}).status_code == 200
     assert client.post("/detect", files={"file": ("x.jpg", b"x")}).status_code == 401
+    assert client.post("/detect/video", files={"file": ("x.mp4", b"x")}).status_code == 401
 
 
 def test_no_detections_is_valid(client):
@@ -104,3 +106,60 @@ def test_no_detections_is_valid(client):
                            data={"confidence": "1.0"})
     assert response.status_code == 200
     assert response.json()["detections"] == []
+
+
+@pytest.fixture
+def video(tmp_path):
+    path = tmp_path / "clip.avi"
+    frame = cv2.imread(str(next(Path("samples").glob("*.jpg"))))
+    frame = cv2.resize(frame, (640, 480))
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 10, (640, 480))
+    assert writer.isOpened()
+    try:
+        for _ in range(6):
+            writer.write(frame)
+    finally:
+        writer.release()
+    return path
+
+
+def test_video_real_inference_and_tracking(client, video):
+    response = client.post("/detect/video", files={"file": (video.name, video.read_bytes())},
+                           data={"frame_stride": "2"})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["frames_total"] == 6
+    assert result["frames_processed"] == 3
+    assert result["duration_s"] == pytest.approx(0.6)
+    assert result["unique_damages"] == len(result["tracks"])
+    assert result["raw_detections"] == sum(t["hits"] for t in result["tracks"])
+    assert result["unique_damages"] == sum(result["by_class"].values())
+    assert "output_path" not in result
+
+
+@pytest.mark.parametrize("filename,payload,status", [
+    ("clip.txt", b"x", 415), ("clip.mp4", b"", 400),
+    ("clip.mp4", b"#EXTM3U\nhttps://example.com", 400),
+    ("clip.mp4", b"\x00\x00\x00\x10ftyp" + b"broken", 400),
+])
+def test_invalid_video(client, filename, payload, status):
+    assert client.post("/detect/video", files={"file": (filename, payload)}).status_code == status
+
+
+@pytest.mark.parametrize("stride", ["0", "11", "1.5"])
+def test_invalid_video_stride(client, stride):
+    assert client.post("/detect/video", files={"file": ("clip.mp4", b"x")},
+                       data={"frame_stride": stride}).status_code == 422
+
+
+@pytest.mark.parametrize("limit,value", [
+    ("MAX_VIDEO_BYTES", 8), ("MAX_VIDEO_FRAMES", 2), ("MAX_VIDEO_PIXELS", 100),
+])
+def test_video_limits_and_temp_cleanup(client, video, monkeypatch, tmp_path, limit, value):
+    import tempfile
+
+    monkeypatch.setattr(main, limit, value)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    response = client.post("/detect/video", files={"file": (video.name, video.read_bytes())})
+    assert response.status_code == 413, response.text
+    assert not list(tmp_path.glob("rdd-video-*"))

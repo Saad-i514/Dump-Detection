@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 from threading import Lock
+from tempfile import TemporaryDirectory
 from typing import Annotated
 
 import numpy as np
@@ -16,11 +17,15 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel
 
 from src.core.detector import Detection, RoadDamageDetector
+from src.core.video import Track, VideoLimitError, analyse_video
 from src.utils.config import resolve_model_path
 from src.utils.constants import DAMAGE_CLASSES, DEFAULT_CONF_THRESHOLD
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_PIXELS = 20_000_000
+MAX_VIDEO_BYTES = 50 * 1024 * 1024
+MAX_VIDEO_FRAMES = 1800
+MAX_VIDEO_PIXELS = 1920 * 1080
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -61,6 +66,21 @@ class DetectionResponse(BaseModel):
     detections: list[Detection]
 
 
+class VideoResponse(BaseModel):
+    frames_total: int
+    frames_processed: int
+    fps: float
+    duration_s: float
+    raw_detections: int
+    unique_damages: int
+    duplication_ratio: float
+    tracks: list[Track]
+    by_class: dict[str, int]
+    by_severity: dict[str, int]
+    peak_frame: int
+    peak_count: int
+
+
 @app.get("/health")
 def health():
     """Readiness probe; available without an API key."""
@@ -77,6 +97,9 @@ def model_info():
         "classes": [asdict(item) for item in DAMAGE_CLASSES],
         "max_upload_bytes": MAX_UPLOAD_BYTES,
         "max_image_pixels": MAX_IMAGE_PIXELS,
+        "max_video_bytes": MAX_VIDEO_BYTES,
+        "max_video_frames": MAX_VIDEO_FRAMES,
+        "max_video_frame_pixels": MAX_VIDEO_PIXELS,
     }
 
 
@@ -110,3 +133,47 @@ def detect(
     return DetectionResponse(
         width=rgb.shape[1], height=rgb.shape[0], count=len(detections), detections=detections,
     )
+
+
+@app.post("/detect/video", response_model=VideoResponse, dependencies=[Security(authorize)])
+def detect_video(
+    file: Annotated[UploadFile, File(description="MP4, MOV, AVI, or MKV; maximum 50 MiB")],
+    confidence: Annotated[float, Form(ge=0.0, le=1.0)] = DEFAULT_CONF_THRESHOLD,
+    frame_stride: Annotated[int, Form(ge=1, le=10)] = 2,
+):
+    """Analyze a short clip synchronously; return tracked damages and severity totals."""
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".mp4", ".mov", ".avi", ".mkv"}:
+        raise HTTPException(status_code=415, detail="Use MP4, MOV, AVI, or MKV")
+    with TemporaryDirectory(prefix="rdd-video-") as directory:
+        source = Path(directory) / ("upload" + suffix)
+        size = 0
+        with source.open("wb") as destination:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_VIDEO_BYTES:
+                    raise HTTPException(status_code=413, detail="Video exceeds 50 MiB")
+                destination.write(chunk)
+        if not size:
+            raise HTTPException(status_code=400, detail="Empty video")
+        with source.open("rb") as stream:
+            header = stream.read(16)
+        # Reject playlists and image sequences before handing the file to FFmpeg.
+        if not (header[4:8] in {b"ftyp", b"moov", b"mdat", b"wide"}
+                or (header[:4] == b"RIFF" and header[8:12] == b"AVI ")
+                or header[:4] == b"\x1aE\xdf\xa3"):
+            raise HTTPException(status_code=400, detail="Invalid video container")
+        try:
+            # shortcut: synchronous clips share one model lock; use a job queue for long videos.
+            with app.state.inference_lock:
+                summary = analyse_video(
+                    app.state.detector, source, conf=confidence, frame_stride=frame_stride,
+                    max_frames=MAX_VIDEO_FRAMES, max_frame_pixels=MAX_VIDEO_PIXELS,
+                )
+        except VideoLimitError as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid or unsupported video") from exc
+        if not summary.frames_processed:
+            raise HTTPException(status_code=400, detail="Video contains no decodable frames")
+        return VideoResponse(**asdict(summary), duplication_ratio=summary.duplication_ratio)

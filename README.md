@@ -32,6 +32,7 @@ keep only the desired model in `models/` and restart after changing weights.
 | `GET /health` | Readiness probe, no API key required |
 | `GET /model` | Active model, backend, class labels, and image limits |
 | `POST /detect` | Multipart `file` plus optional `confidence` (0–1, default 0.25) |
+| `POST /detect/video` | Video `file`, optional `confidence`, and `frame_stride` (1–10, default 2) |
 
 Example from PowerShell (use `curl` on Linux/macOS):
 
@@ -47,6 +48,29 @@ Accepted images are JPEG, PNG, and WebP, up to 10 MiB and 20 megapixels. Invalid
 return 400/415, oversized images 413, invalid fields 422, and invalid API keys 401.
 Images and results are not saved to disk by the endpoint; multipart uploads may be
 temporarily spooled by the server. Inference is serialized to protect shared model state.
+
+### Video detection
+
+```powershell
+curl.exe --max-time 900 -X POST http://localhost:8000/detect/video -F "file=@clip.mp4" -F "confidence=0.25" -F "frame_stride=2"
+```
+
+Accepts MP4, MOV, AVI and MKV containers with a codec supported by the installed OpenCV.
+Limits: **50 MiB**, **1,800 decoded frames**, and **2,073,600 pixels per frame** (1080p).
+A 30 FPS clip can be up to 60 seconds. Limits apply to all decoded frames, including
+skipped frames; exceeding a limit returns 413 rather than a partial result.
+
+The synchronous response contains `frames_total`, `frames_processed`, `fps`, `duration_s`,
+`raw_detections`, `unique_damages`, `duplication_ratio`, `by_class`, `by_severity`,
+`peak_frame`, `peak_count`, and `tracks`. Each track includes `track_id`, `class_id`,
+`first_frame`, `last_frame`, `hits`, the latest `bbox`, and its most severe detection in
+`best`. Frame indices are zero-based. Tracking merges overlapping observations across
+frames; larger strides can miss brief damage or reduce tracking continuity.
+
+Processing can take several minutes on CPU. Set a suitable HTTP timeout; image requests
+wait while a video holds the shared model lock. Uploaded files are temporary and removed
+after success or failure. This endpoint returns JSON, not an annotated video; use the
+Streamlit UI for annotated downloads. It uses the same `X-API-Key` protection as `/detect`.
 
 ### Sharing with teammates
 
@@ -67,8 +91,8 @@ Pushing code to GitHub does **not** host the API. For access outside your truste
 deploy behind HTTPS with authentication, request-body limits and rate limiting. The
 10 MiB endpoint check happens after multipart parsing, so enforce a total request limit
 at the reverse proxy for an externally accessible deployment. Browser frontends on other
-origins need a same-origin proxy (CORS is not enabled). Video processing remains in the
-Streamlit UI; this API accepts individual images.
+origins need a same-origin proxy (CORS is not enabled). Long videos need a background-job
+deployment; this API is intended for short synchronous requests.
 
 Run checks with `.\.venv\Scripts\python.exe -m pytest tests/ -q`. API integration tests
 use real trained weights and skip when weights are absent. Streamlit is pinned to 1.50.0

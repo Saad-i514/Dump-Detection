@@ -29,6 +29,10 @@ from src.utils.constants import TRACK_MAX_AGE, TRACKING_IOU_THRESHOLD
 Box = Sequence[float]
 
 
+class VideoLimitError(ValueError):
+    """A decoded video exceeds a caller's processing limits."""
+
+
 def iou(box_a: Box, box_b: Box) -> float:
     """Intersection over union of two ``(x1, y1, x2, y2)`` boxes."""
     ax1, ay1, ax2, ay2 = box_a
@@ -225,6 +229,8 @@ def analyse_video(
     iou_threshold: float | None = None,
     imgsz: int | None = None,
     on_frame: Callable[[int, int, np.ndarray, list[Detection]], None] | None = None,
+    max_frames: int | None = None,
+    max_frame_pixels: int | None = None,
 ) -> VideoSummary:
     """Detect damage through a video, optionally writing an annotated copy.
 
@@ -257,6 +263,11 @@ def analyse_video(
             ok, frame = capture.read()
             if not ok:
                 break
+
+            if max_frames is not None and frames_read >= max_frames:
+                raise VideoLimitError(f"Video exceeds {max_frames} frames")
+            if max_frame_pixels is not None and frame.shape[0] * frame.shape[1] > max_frame_pixels:
+                raise VideoLimitError(f"Video exceeds {max_frame_pixels} pixels per frame")
 
             index = frames_read
             frames_read += 1
