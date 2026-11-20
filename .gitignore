@@ -34,3 +34,11 @@ runs/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local models, credentials, and server logs
+models/backup*/
+new_trained_model/
+*.log
+.env
+.env.*
+!.env.example

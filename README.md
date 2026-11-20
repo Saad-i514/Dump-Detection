@@ -1,4 +1,82 @@
-# 🛣️ Road Damage Detection
+# Dump-Detection
+
+Road-damage detection with a FastAPI interface for team integration and a Streamlit UI.
+Built on [IhsanKT/road-damage-detector](https://github.com/IhsanKT/road-damage-detector);
+the original project history and attribution are retained below. This model detects
+road cracks and potholes, not garbage or illegal dumping.
+
+## Team HTTP API
+
+```powershell
+git clone https://github.com/Saad-i514/Dump-Detection.git
+cd Dump-Detection
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Install trained weights using **Getting the model** below. Model binaries are excluded
+from Git. To reproduce the currently selected interim model, download it directly:
+
+```powershell
+Invoke-WebRequest 'https://github.com/oracl4/RoadDamageDetection/raw/refs/heads/main/models/YOLOv8_Small_RDD.pt' -OutFile 'models/road_damage_best.pt'
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+Open **http://localhost:8000/docs** for Swagger UI, or **/openapi.json** for the API schema.
+The API loads one model at startup and refuses to start with missing weights or a
+class order other than D00, D10, D20, D40. ONNX takes precedence when both formats exist;
+keep only the desired model in `models/` and restart after changing weights.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Readiness probe, no API key required |
+| `GET /model` | Active model, backend, class labels, and image limits |
+| `POST /detect` | Multipart `file` plus optional `confidence` (0–1, default 0.25) |
+
+Example from PowerShell (use `curl` on Linux/macOS):
+
+```powershell
+curl.exe -X POST http://localhost:8000/detect -F "file=@samples/road_02.jpg" -F "confidence=0.25"
+```
+
+The JSON response contains `width`, `height`, `count`, and `detections`. Each detection
+includes `class_id`, `code`, `class_name`, `confidence`, `bbox` (`x1,y1,x2,y2` in pixels),
+`bbox_area`, `relative_area`, `severity_score`, `severity_level`, and display colours.
+Coordinates refer to the EXIF-oriented image. An empty `detections` array is a valid result.
+Accepted images are JPEG, PNG, and WebP, up to 10 MiB and 20 megapixels. Invalid inputs
+return 400/415, oversized images 413, invalid fields 422, and invalid API keys 401.
+Images and results are not saved to disk by the endpoint; multipart uploads may be
+temporarily spooled by the server. Inference is serialized to protect shared model state.
+
+### Sharing with teammates
+
+For a trusted LAN, set an API key and listen on all interfaces:
+
+```powershell
+$env:RDD_API_KEY = .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
+.\.venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
+Share your machine's LAN IP and the key privately. Teammates use
+`http://YOUR_LAN_IP:8000/docs`, click **Authorize**, and enter the key; HTTP clients send
+the `X-API-Key` header. Without `RDD_API_KEY`, the API permits unauthenticated calls and
+should only be bound to localhost. Setting the variable in one terminal does not change
+an already running server. Windows Firewall may need a private-network rule for port 8000.
+
+Pushing code to GitHub does **not** host the API. For access outside your trusted LAN,
+deploy behind HTTPS with authentication, request-body limits and rate limiting. The
+10 MiB endpoint check happens after multipart parsing, so enforce a total request limit
+at the reverse proxy for an externally accessible deployment. Browser frontends on other
+origins need a same-origin proxy (CORS is not enabled). Video processing remains in the
+Streamlit UI; this API accepts individual images.
+
+Run checks with `.\.venv\Scripts\python.exe -m pytest tests/ -q`. API integration tests
+use real trained weights and skip when weights are absent. Streamlit is pinned to 1.50.0
+because newer versions changed the test runner's relative-path resolution.
+
+---
+
+## Original project documentation
 
 **Detects, classifies and severity-scores road damage from images and dashcam video.**
 Runs entirely on CPU — no GPU, no cloud inference, no API keys.

@@ -13,7 +13,7 @@ pillow>=11.0.0
 numpy>=2.0.0
 
 # --- app ---
-streamlit>=1.40.0
+streamlit==1.50.0
 pandas>=2.2.0
 
 # --- map ---
@@ -22,3 +22,9 @@ streamlit-folium>=0.24.0
 
 # --- tests ---
 pytest>=8.0.0
+httpx>=0.28.0
+
+# --- HTTP API ---
+fastapi>=0.115.0,<1
+uvicorn>=0.30.0,<1
+python-multipart>=0.0.18
