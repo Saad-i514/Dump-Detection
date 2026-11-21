@@ -7,6 +7,11 @@ road cracks and potholes, not garbage or illegal dumping.
 
 ## Team HTTP API
 
+For public AWS hosting, see [Terraform deployment and website examples](infra/README.md).
+
+**Live public API:** [Swagger documentation](https://d27aph0gu4g2ie.cloudfront.net/docs).
+No API key is required on this deployment; all website origins are allowed.
+
 ```powershell
 git clone https://github.com/Saad-i514/Dump-Detection.git
 cd Dump-Detection
@@ -33,6 +38,8 @@ keep only the desired model in `models/` and restart after changing weights.
 | `GET /model` | Active model, backend, class labels, and image limits |
 | `POST /detect` | Multipart `file` plus optional `confidence` (0–1, default 0.25) |
 | `POST /detect/video` | Video `file`, optional `confidence`, and `frame_stride` (1–10, default 2) |
+| `POST /detect/video/jobs` | Submit a video job; returns 202 with a status URL |
+| `GET /detect/video/jobs/{job_id}` | Poll for processing/completed/failed status and JSON results |
 
 Example from PowerShell (use `curl` on Linux/macOS):
 
@@ -47,7 +54,8 @@ Coordinates refer to the EXIF-oriented image. An empty `detections` array is a v
 Accepted images are JPEG, PNG, and WebP, up to 10 MiB and 20 megapixels. Invalid inputs
 return 400/415, oversized images 413, invalid fields 422, and invalid API keys 401.
 Images and results are not saved to disk by the endpoint; multipart uploads may be
-temporarily spooled by the server. Inference is serialized to protect shared model state.
+temporarily spooled by the server. Inference runs one request at a time; competing
+requests receive 429 with a Retry-After header.
 
 ### Video detection
 
@@ -68,7 +76,7 @@ The synchronous response contains `frames_total`, `frames_processed`, `fps`, `du
 frames; larger strides can miss brief damage or reduce tracking continuity.
 
 Processing can take several minutes on CPU. Set a suitable HTTP timeout; image requests
-wait while a video holds the shared model lock. Uploaded files are temporary and removed
+receive 429 while a video holds the shared model lock. Uploaded files are temporary and removed
 after success or failure. This endpoint returns JSON, not an annotated video; use the
 Streamlit UI for annotated downloads. It uses the same `X-API-Key` protection as `/detect`.
 
@@ -91,8 +99,10 @@ Pushing code to GitHub does **not** host the API. For access outside your truste
 deploy behind HTTPS with authentication, request-body limits and rate limiting. The
 10 MiB endpoint check happens after multipart parsing, so enforce a total request limit
 at the reverse proxy for an externally accessible deployment. Browser frontends on other
-origins need a same-origin proxy (CORS is not enabled). Long videos need a background-job
-deployment; this API is intended for short synchronous requests.
+origins need `RDD_CORS_ORIGINS` set to a comma-separated list of allowed origins (or `*`
+for public access). CORS is disabled locally by default. Behind a proxy, submit videos
+to `/detect/video/jobs` and poll the returned status URL. Results expire after one hour
+or a restart. The AWS deployment enables public CORS and requires the background-job route.
 
 Run checks with `.\.venv\Scripts\python.exe -m pytest tests/ -q`. API integration tests
 use real trained weights and skip when weights are absent. Streamlit is pinned to 1.50.0

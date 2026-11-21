@@ -97,6 +97,8 @@ def test_api_key(client):
     assert client.get("/model", headers={"X-API-Key": key}).status_code == 200
     assert client.post("/detect", files={"file": ("x.jpg", b"x")}).status_code == 401
     assert client.post("/detect/video", files={"file": ("x.mp4", b"x")}).status_code == 401
+    assert client.post("/detect/video/jobs", files={"file": ("x.mp4", b"x")}).status_code == 401
+    assert client.get("/detect/video/jobs/missing").status_code == 401
 
 
 def test_no_detections_is_valid(client):
@@ -163,3 +165,61 @@ def test_video_limits_and_temp_cleanup(client, video, monkeypatch, tmp_path, lim
     response = client.post("/detect/video", files={"file": (video.name, video.read_bytes())})
     assert response.status_code == 413, response.text
     assert not list(tmp_path.glob("rdd-video-*"))
+
+
+def wait_for_job(client, url):
+    import time
+
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        response = client.get(url)
+        assert response.status_code == 200
+        result = response.json()
+        if result["status"] != "processing":
+            return result
+        time.sleep(0.05)
+    pytest.fail("Video job did not complete")
+
+
+def test_background_video_job(client, video, monkeypatch, tmp_path):
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    response = client.post("/detect/video/jobs", files={"file": (video.name, video.read_bytes())})
+    assert response.status_code == 202, response.text
+    result = wait_for_job(client, response.json()["status_url"])
+    assert result["status"] == "completed", result
+    assert result["result"]["frames_total"] == 6
+    assert not list(tmp_path.glob("rdd-video-*"))
+    assert not main.app.state.inference_lock.locked()
+
+
+def test_failed_background_job(client):
+    response = client.post("/detect/video/jobs", files={"file": ("bad.mp4", b"\0\0\0\x10ftypbroken")})
+    assert response.status_code == 202
+    result = wait_for_job(client, response.json()["status_url"])
+    assert result["status"] == "failed"
+    assert result["error_status"] == 400
+    assert not main.app.state.inference_lock.locked()
+
+
+def test_invalid_background_upload_releases_slot(client):
+    response = client.post("/detect/video/jobs", files={"file": ("bad.mp4", b"garbage")})
+    assert response.status_code == 400
+    assert not main.app.state.inference_lock.locked()
+
+
+def test_busy_model_rejects_new_job(client):
+    with main.app.state.inference_lock:
+        response = client.post("/detect/video/jobs", files={"file": ("clip.mp4", b"x")})
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "5"
+
+
+def test_unknown_job(client):
+    assert client.get("/detect/video/jobs/missing").status_code == 404
+
+
+def test_cloud_uses_jobs(client, monkeypatch, video):
+    monkeypatch.setenv("RDD_ASYNC_VIDEO_ONLY", "1")
+    assert client.post("/detect/video", files={"file": (video.name, video.read_bytes())}).status_code == 409

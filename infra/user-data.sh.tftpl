@@ -1,0 +1,112 @@
+#!/bin/bash
+set -eu
+cat > /usr/local/bin/rdd-bootstrap <<'BOOTSTRAP'
+#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+apt-get update
+apt-get install -y python3-venv nginx ffmpeg libgl1 unzip curl
+if ! command -v aws >/dev/null; then
+  curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscli.zip
+  unzip -qo /tmp/awscli.zip -d /tmp/awscli
+  /tmp/awscli/aws/install
+fi
+id rdd >/dev/null 2>&1 || useradd --system --home /opt/rdd --shell /usr/sbin/nologin rdd
+mkdir -p /opt/rdd
+aws s3 cp 's3://${bucket}/${bundle_key}' /tmp/rdd.tar.gz --region '${region}' --only-show-errors
+tar -xzf /tmp/rdd.tar.gz -C /opt/rdd
+python3 -m venv /opt/rdd/.venv
+/opt/rdd/.venv/bin/python -m pip install --upgrade pip
+/opt/rdd/.venv/bin/python -m pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cpu
+/opt/rdd/.venv/bin/python -m pip install -r /opt/rdd/requirements-api.txt
+chown -R rdd:rdd /opt/rdd
+cat > /etc/systemd/system/rdd-api.service <<'SERVICE'
+[Unit]
+Description=Road damage detection API
+After=network-online.target
+Wants=network-online.target
+[Service]
+User=rdd
+Group=rdd
+WorkingDirectory=/opt/rdd
+Environment=RDD_CORS_ORIGINS=*
+Environment=RDD_ASYNC_VIDEO_ONLY=1
+Environment=YOLO_AUTOINSTALL=false
+Environment=OMP_NUM_THREADS=2
+Environment=MKL_NUM_THREADS=2
+Environment=YOLO_CONFIG_DIR=/opt/rdd/.config
+ExecStart=/opt/rdd/.venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/rdd
+ProtectHome=true
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+SERVICE
+origin_token=$(aws ssm get-parameter --name '${token_parameter}' --with-decryption --region '${region}' --query Parameter.Value --output text)
+cat > /etc/nginx/sites-available/rdd <<'NGINX'
+map $request_method $inference_client {
+    default "";
+    POST $binary_remote_addr;
+}
+limit_req_zone $inference_client zone=inference:10m rate=10r/m;
+limit_conn_zone $binary_remote_addr zone=connections:10m;
+server {
+    listen 80 default_server;
+    server_name _;
+    client_max_body_size 51m;
+    client_body_timeout 60s;
+    set_real_ip_from 0.0.0.0/0;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive off;
+    if ($http_x_origin_token != "ORIGIN_TOKEN_PLACEHOLDER") { return 403; }
+    location / {
+        limit_req zone=inference burst=3 nodelay;
+        limit_req_status 429;
+        limit_conn connections 10;
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_read_timeout 60s;
+    }
+}
+NGINX
+sed -i "s/ORIGIN_TOKEN_PLACEHOLDER/$origin_token/" /etc/nginx/sites-available/rdd
+chmod 600 /etc/nginx/sites-available/rdd
+ln -sf /etc/nginx/sites-available/rdd /etc/nginx/sites-enabled/rdd
+rm -f /etc/nginx/sites-enabled/default
+nginx -t
+systemctl daemon-reload
+systemctl enable --now rdd-api
+systemctl restart nginx
+BOOTSTRAP
+chmod 700 /usr/local/bin/rdd-bootstrap
+cat > /etc/systemd/system/rdd-bootstrap.service <<'SERVICE'
+[Unit]
+Description=Install road damage API
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/rdd-bootstrap
+Restart=on-failure
+RestartSec=30
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+SERVICE
+systemctl daemon-reload
+systemctl enable --now --no-block rdd-bootstrap
