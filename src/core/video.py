@@ -239,7 +239,7 @@ def analyse_video(
     halves the runtime - which matters on CPU.
 
     ``on_frame(index, total, annotated, detections)`` is called per processed frame so
-    a UI can show progress without this module importing Streamlit.
+    callers can report progress without this module depending on a frontend.
     """
     source = Path(source)
     capture = cv2.VideoCapture(str(source))

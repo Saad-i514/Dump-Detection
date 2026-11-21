@@ -1,6 +1,5 @@
 # --- model weights ---
-# Trained weights are ~6MB; regenerate via training/train_yolo26_rdd.ipynb.
-# Ship them as a GitHub Release asset rather than committing binaries.
+# Keep model binaries local or in the private AWS deployment bundle.
 models/*.pt
 models/*.onnx
 !models/.gitkeep
@@ -15,8 +14,7 @@ data/detections.db
 data/uploads/
 data/results/
 
-# samples/ at the repo root is deliberately NOT ignored - the demo images are
-# curated inputs committed with the project, not generated output.
+# samples/road_02.jpg is the retained API integration-test fixture.
 
 # --- python ---
 __pycache__/

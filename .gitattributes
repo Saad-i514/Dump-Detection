@@ -3,9 +3,6 @@
 # shows the whole file as changed.
 * text=auto eol=lf
 
-# Notebooks are JSON - keep them LF so diffs stay readable.
-*.ipynb text eol=lf
-
 # Never let git touch binaries.
 *.png  binary
 *.jpg  binary

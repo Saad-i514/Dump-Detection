@@ -6,20 +6,11 @@ directory it is launched from.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 MODELS_DIR = PROJECT_ROOT / "models"
-DATA_DIR = PROJECT_ROOT / "data"
-
-# Demo images live at the repo root rather than under data/, which holds runtime
-# output. Samples are curated inputs committed with the project, not generated data.
-SAMPLES_DIR = PROJECT_ROOT / "samples"
-UPLOADS_DIR = DATA_DIR / "uploads"
-RESULTS_DIR = DATA_DIR / "results"
-DB_PATH = Path(os.getenv("RDD_DB_PATH", DATA_DIR / "detections.db"))
 
 # Preference order for automatic model selection. ONNX first: it is materially faster
 # than PyTorch on CPU, which is the only backend available on the target machine.
@@ -31,12 +22,6 @@ MODEL_CANDIDATES = (
 # Stock COCO weights. Detects people and cars, not road damage - useful only as a
 # stand-in so the app is runnable before training finishes.
 FALLBACK_MODEL = "yolo26n.pt"
-
-
-def ensure_dirs() -> None:
-    """Create the runtime directories the app writes to."""
-    for d in (MODELS_DIR, DATA_DIR, SAMPLES_DIR, UPLOADS_DIR, RESULTS_DIR):
-        d.mkdir(parents=True, exist_ok=True)
 
 
 def resolve_model_path() -> tuple[Path | str, bool]:
